@@ -10,11 +10,12 @@ the admission decision gets made. If we could tell at triage which patients are 
 admitted, the hospital could start looking for a bed hours earlier. This project builds a model to do
 that, using only what is known when the triage nurse finishes their assessment.
 
-The data is a public cohort of 560,486 ED visits. A logistic regression built with strict controls
-against data leakage reaches an AUROC of 0.921 (0.921 +/- 0.001 across 5-fold cross-validation) and
-catches about 81% of true admissions at the default threshold. It uses no lab or imaging results,
-since those are generated after triage and would hand the model information it would not actually
-have at decision time. The numbers here reflect what is realistically achievable at triage.
+The data is a public cohort of 560,486 ED visits. Working from a strict leakage-controlled feature
+set (no labs or imaging, since those come after triage), I compared a logistic regression against a
+decision tree, a random forest, and gradient boosting. Gradient boosting performed best with a test
+AUROC of 0.927, but the more useful finding is that the simple logistic regression is within about
+half a percentage point of it (0.921) while staying fully interpretable. At a threshold set to catch
+about 90% of admissions, the best model flags roughly 44% of arrivals for early bed planning.
 
 ## Rationale
 
@@ -55,11 +56,16 @@ The notebook follows the CRISP-DM process.
    counts (`_count`, `_npos`), and repeated in-department vitals.
 3. Data preparation: removed 2 exact duplicate rows, set physiologically impossible vital values to
    missing, median-imputed the numeric features, added indicator flags so missingness is kept as
-   signal, and one-hot encoded the categoricals with an explicit "Missing" level.
+   signal, and one-hot encoded the categoricals with an explicit "Missing" level (636 features total).
 4. Feature engineering: abnormal-vital flags (tachycardia, hypotension, hypoxia, fever, tachypnea),
    shock index (HR/SBP), counts of comorbidities, complaints, and medication classes, and age bands.
-5. Modeling: a DummyClassifier as a floor and a logistic regression baseline with
-   `class_weight="balanced"`, using a stratified 80/20 split and 5-fold stratified cross-validation.
+5. Modeling: a DummyClassifier floor, a logistic regression baseline, and three tree-based models
+   (decision tree, random forest, gradient boosting). Tree models used the raw feature matrix
+   (they are scale-invariant); logistic regression used a standardized matrix. To keep tuning
+   affordable on 448k rows, I grid-searched each model on a 50,000-row stratified subsample of the
+   training data with 3-fold cross-validation, then refit the chosen settings on the full training
+   set and evaluated once on the held-out test set. Support vector machines and k-nearest neighbors
+   were left out as impractical at this scale.
 
 On metrics: the classes are imbalanced at roughly 70/30, so accuracy is the wrong thing to optimize.
 A model that predicts "discharge" for everyone is 70% accurate and useless. I report AUROC as the
@@ -70,25 +76,36 @@ matters more than a false alarm.
 
 ## Results
 
-| Model | AUROC | AUPRC | Sensitivity | Specificity | PPV |
-|---|---|---|---|---|---|
-| Dummy (majority class) | 0.500 | n/a | n/a | n/a | n/a |
-| Logistic Regression (baseline) | 0.921 | 0.852 | 0.814 | 0.857 | 0.706 |
+Metrics are on the held-out test set. Sensitivity, specificity, PPV, and alert rate are reported at a
+threshold tuned to catch about 90% of admissions.
 
-- The cross-validated AUROC was 0.921 +/- 0.001, so the result does not depend on one particular
-  split.
-- The model ranks a random admitted patient above a random discharged patient about 92% of the time,
-  with no lab or imaging data.
-- The strongest predictors are low ESI (high acuity), arrival by ambulance, older age, abnormal
-  vitals (high heart and respiratory rate, low oxygen, elevated shock index), and a heavier prior
-  medical history. These are the factors clinicians already weigh at the bedside.
+| Model | CV AUROC | Test AUROC | Test AUPRC | Sensitivity | Specificity | PPV | Alert rate |
+|---|---|---|---|---|---|---|---|
+| Dummy (majority class) | 0.500 | 0.500 | 0.297 | n/a | n/a | n/a | n/a |
+| Logistic Regression | 0.915 | 0.921 | 0.852 | 0.90 | 0.746 | 0.600 | 0.446 |
+| Decision Tree | 0.905 | 0.914 | 0.840 | 0.90 | 0.706 | 0.565 | 0.475 |
+| Random Forest | 0.917 | 0.924 | 0.860 | 0.90 | 0.752 | 0.605 | 0.442 |
+| **Gradient Boosting** | **0.924** | **0.927** | **0.867** | 0.90 | **0.759** | **0.613** | **0.437** |
+
+![Model comparison](images/fig11_model_roc_pr.png)
+
+- Gradient boosting is the best model, but only by a small margin. Logistic regression trails it by
+  about half a point of AUROC while being fully interpretable.
+- At the 90% sensitivity operating point, gradient boosting reaches 76% specificity and flags 44% of
+  patients. To catch nine of every ten future admissions, the model flags a little under half of all
+  arrivals for early bed planning. The threshold is a policy choice and can be moved.
+- The top features agree across all three model types: ESI acuity, number of prior medication
+  classes, age, whether the patient was admitted on a previous visit, and arrival by ambulance.
+  These are the same signals clinicians already weigh at triage.
 - Admission rate tracks ESI closely, falling from 85.6% at ESI 1 to 0.4% at ESI 5.
 
-![Model evaluation](images/fig09_evaluation.png)
+## Deployment considerations
 
-At triage, using acuity, vital signs, chief complaint, age, arrival mode, and prior history, the
-model can flag patients who are likely to be admitted. That is early enough to start bed planning
-before the workup finishes, which is usually when boarding builds up.
+A model like this would not be put into clinical use as it stands. It would need ongoing monitoring
+and periodic retraining, because triage practices and patient mix drift over time. Because the
+features include race, insurance, and age, it would have to be audited for fairness across those
+groups before any clinical use. And the output is a probability, not a decision: it should support a
+charge nurse or bed manager rather than replace clinical judgment.
 
 ## Limitations
 
@@ -99,20 +116,24 @@ before the workup finishes, which is usually when boarding builds up.
   before being used.
 - I kept a few historical fields (`previousdispo`, `n_admissions`) because they pre-date the visit.
   A more conservative version could drop them.
-- Logistic regression is linear, so it cannot capture interactions between features.
+- The tree models were tuned on a 50,000-row subsample and refit on the full training set. A full
+  search on all 448k rows could shift the chosen settings slightly, though the cross-validated scores
+  were stable.
 
 ## Next steps
 
-1. Test more flexible models (decision trees, random forests, gradient boosting) with
-   cross-validation and tuned hyperparameters to see whether they beat the linear baseline.
-2. Tune the decision threshold to a clinically meaningful point, such as catching at least 90% of
-   admissions, and report how many alerts that produces.
-3. Compare the most important features across models to check that the main predictors are stable.
-4. Validate on data from a different time period or site before trusting the model in practice.
+1. Validate the model on data from a different time period or hospital before trusting it in
+   practice, since this cohort is from a single health system.
+2. Audit the model for fairness across race, insurance, and age groups and confirm its error rates
+   are acceptable for each.
+3. Run a prospective evaluation to test whether acting on the predictions actually shortens boarding,
+   which this retrospective data cannot show.
+4. If the last bit of performance matters, run a fuller hyperparameter search on the full training
+   set rather than the subsample used here.
 
 ## Outline of project
 
-- [Initial Report and EDA notebook](notebooks/initial_report_eda.ipynb)
+- [Capstone analysis notebook](notebooks/capstone_analysis.ipynb)
 
 ## Contact and Further Information
 
