@@ -66,6 +66,9 @@ The notebook follows the CRISP-DM process.
    training data with 3-fold cross-validation, then refit the chosen settings on the full training
    set and evaluated once on the held-out test set. Support vector machines and k-nearest neighbors
    were left out as impractical at this scale.
+6. Neural network check: I also fit a small multilayer perceptron in a supplemental notebook,
+   using the same train/test split, to see whether a deeper Modules 21-22 model would beat
+   gradient boosting on this tabular feature set. See `notebooks/02_neural_network.ipynb`.
 
 On metrics: the classes are imbalanced at roughly 70/30, so accuracy is the wrong thing to optimize.
 A model that predicts "discharge" for everyone is 70% accurate and useless. I report AUROC as the
@@ -98,6 +101,16 @@ threshold tuned to catch about 90% of admissions.
   classes, age, whether the patient was admitted on a previous visit, and arrival by ambulance.
   These are the same signals clinicians already weigh at triage.
 - Admission rate tracks ESI closely, falling from 85.6% at ESI 1 to 0.4% at ESI 5.
+
+### Neural network check
+
+The supplemental notebook fits a small multilayer perceptron (256/128/64 hidden units, ReLU, Adam,
+early stopping) under the same train/test split and compares it head-to-head with gradient boosting.
+The MLP reaches test AUROC 0.925, vs 0.927 for gradient boosting. A paired bootstrap on the test
+set pins the gap at 0.002 AUROC in favor of gradient boosting (95% CI 0.001 to 0.003). The
+interval excludes zero, so the difference is statistically detectable, but 0.002 AUROC is well below
+what would matter clinically. Calibration and Brier scores are comparable. Curves and the bootstrap
+are in `notebooks/02_neural_network.ipynb`.
 
 ## Deployment considerations
 
@@ -133,7 +146,8 @@ charge nurse or bed manager rather than replace clinical judgment.
 
 ## Outline of project
 
-- [Capstone analysis notebook](notebooks/capstone_analysis.ipynb)
+- [Main capstone analysis](notebooks/capstone_analysis.ipynb): EDA, four classical models (logistic regression, decision tree, random forest, gradient boosting), evaluation
+- [Neural network comparison](notebooks/02_neural_network.ipynb): small MLP head-to-head with gradient boosting on the same train/test split
 
 ## Contact and Further Information
 
